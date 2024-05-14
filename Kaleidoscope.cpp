@@ -95,7 +95,7 @@ static int gettok(){
     int ThisChar = LastChar;
     LastChar = getchar();
     return ThisChar;
-}
+} // end of gettok()
 
 //------------------------------------------------------------------------------------------------------//
 // End of Lexer
@@ -208,7 +208,7 @@ std::unique_ptr<PrototypeAST> LogErrorP(const char* Str){
     return nullptr;
 }
 
-/// Definition starts on line  , declared here so the compiler can resolve the function name.
+/// Declared here so the compiler can resolve the function name, defintion below.
 static std::unique_ptr<ExprAST> ParseExpression();
 
 /// numberexpr ::= number
@@ -286,13 +286,193 @@ static std::unique_ptr<ExprAST> ParsePrimary(){
     }
 }
 
+static int getTokPrecedence(){
+    if(!isascii(CurTok))
+        return -1;
+
+    // Make sure it's a declared binop.
+    int TokPrec = BinopPrecedence[CurTok];
+    if(TokPrec <= 0) return -1;
+    return TokPrec;
+}
+
+/// binoprhs
+/// ::= ('+' primary)*
+static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS){
+    // If this is a binop, find its precedence.
+    while(true){
+        int TokPrec = getTokPrecedence();
+
+        // If this is a binop that binds at least as tightly as the current binop,
+        // consume it, otherwise we are done.
+        if(TokPrec < ExprPrec)
+            return LHS;
+
+        // Okay, we know this is a binop.
+        int BinOp = CurTok; // remember binop
+        getNextToken(); // eat binop
+
+        // Parse the primary expression after the binary operator.
+        auto RHS = ParsePrimary();
+        if(!RHS)
+            return nullptr;
+
+        // If BinOp binds less tightly with RHS that the operator after RHS, let
+        // the pending operator take RHS as its LHS.
+        int NextPrec = getTokPrecedence();
+        if(TokPrec < NextPrec){
+            RHS = ParseBinOpRHS(TokPrec+1, std::move(RHS));
+            if(!RHS)
+                return nullptr;
+        }
+
+        // Merge LHS/RHS.
+        LHS = std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    } // loop around to the top of the while loop.
+}
+
+/// expression
+///     ::= primary binoprhs
+static std::unique_ptr<ExprAST> ParseExpression(){
+    auto LHS = ParsePrimary();
+    if(!LHS)
+        return nullptr;
+
+    return ParseBinOpRHS(0, std::move(LHS));
+}
+
+/// prototype
+///     ::= id '(' id* ')'
+static std::unique_ptr<PrototypeAST> ParsePrototype(){
+    if(CurTok != tok_identifier)
+        return LogErrorP("Expected function name in prototype");
+
+    std::string FnName = IdentifierStr;
+    getNextToken();
+
+    if(CurTok != '(')
+        return LogErrorP("Expected '(' in protype");
+
+    // Read the list of argument names.
+    std::vector<std::string> ArgNames;
+    while(getNextToken() == tok_identifier)
+        ArgNames.push_back(IdentifierStr);
+
+    if(CurTok != ')')
+        return LogErrorP("Expected ')' in prototype");
+
+    // success.
+    getNextToken(); // eat ')'
+
+    return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+}
+
+/// definition ::= 'def' prototype expression
+static std::unique_ptr<FunctionAST> ParseDefinition(){
+    getNextToken(); // eat def.
+    auto Proto = ParsePrototype();
+    if(!Proto) return nullptr;
+
+    if(auto E = ParseExpression())
+        return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+
+    return nullptr;
+}
+
+/// external ::= 'extern' prototype
+static std::unique_ptr<PrototypeAST> ParseExtern(){
+    getNextToken(); // eat extern.
+    return ParsePrototype();
+}
+
+/// toplevelexpr ::= expression
+static std::unique_ptr<FunctionAST> ParseTopLevelExpr(){
+    if(auto E = ParseExpression()){
+        // Make an anonymous proto.
+        auto Proto = std::make_unique<PrototypeAST>("", std::vector<std::string>());
+        return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    }
+    return nullptr;
+}
+
+//------------------------------------------------------------------------------------------------------//
+// Top-Level parsing
+//------------------------------------------------------------------------------------------------------//
+
+static void HandleDefinition(){
+    if(ParseDefinition()){
+        std::cout << "Parsed a function definition." << std::endl;
+    }else{
+        // Skip token for error recovery.
+        getNextToken();
+    }
+}
+
+static void HandleExtern(){
+    if(ParseExtern()){
+        std::cout << "Parsed an extern." << std::endl;
+    }else{
+        // Skip token for error recovery
+        getNextToken();
+    }
+}
+
+static void HandleTopLevelExpression(){
+    // Evaluate a top-level expression into an anonymous function.
+    if(ParseTopLevelExpr()){
+        std::cout << "Parsed a top-level expression." << std::endl;
+    }else{
+        // Skip token for error recovery.
+        getNextToken();
+    }
+}
+
+/// top ::= definition | external | expression | ';'
+static void MainLoop(){
+    while(true){
+        switch(CurTok){
+            case tok_eof:
+                return;
+            case ';': // ignore top-level semicolons.
+                std::cout << "ready> ";
+                getNextToken();
+                break;
+            case tok_def:
+                HandleDefinition();
+                break;
+            case tok_extern:
+                HandleExtern();
+                break;
+            default:
+                HandleTopLevelExpression();
+                break;
+        }
+    }
+}
+
+//------------------------------------------------------------------------------------------------------//
+// End of parser
+//------------------------------------------------------------------------------------------------------//
+
+//------------------------------------------------------------------------------------------------------//
+// Main driver code.
 //------------------------------------------------------------------------------------------------------//
 
 int main(int argc, char* argv[]){
-    std::cout << "Test" << std::endl;
-    std::cout << tok_eof << std::endl;
+    // Install standard binary operators.
+    // 1 is lowest precedence.
+    BinopPrecedence['<'] = 10;
+    BinopPrecedence['+'] = 20;
+    BinopPrecedence['-'] = 20;
+    BinopPrecedence['*'] = 40;
+    BinopPrecedence['/'] = 40; // highest.
 
-    Token tmp = tok_extern;
+    // Prime the first token.
+    std::cout << "ready> ";
+    getNextToken();
 
-    std::cout << tok_extern << std::endl;
+    // run the main "interpreter loop" now.
+    MainLoop();
+
+    return 0;
 }
